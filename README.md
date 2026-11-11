@@ -46,6 +46,18 @@ fb = FBClient([{"name": "c_user", "value": "..."},
                {"name": "xs", "value": "..."}])
 ```
 
+Hoặc thẳng từ file `cookies.txt` (Netscape format — tiện ích
+*Get cookies.txt LOCALLY*, *EditThisCookie*...). Loader chỉ lấy cookie
+`*.facebook.com`, tự xử lý dòng `# HttpOnly_`:
+
+```python
+fb = FBClient.from_cookies_txt("cookies.txt")
+```
+
+File export toàn trang (kèm discord/google/...) vẫn dùng được — các cookie
+domain khác bị bỏ qua. Đã test live: `c_user + xs + datr + fr...` trong
+export là đủ, không cần thứ gì thêm.
+
 ## Sử dụng
 
 ```python

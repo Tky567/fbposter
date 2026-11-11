@@ -5,6 +5,7 @@ facebook.com. Session = cookie c_user/xs từ extension grabber.
 
 API:
     fb = FBClient.from_session_dir("sessions")
+    fb = FBClient.from_cookies_txt("cookies.txt")   # Netscape format
     fb.verify()                      → thông tin session
     fb.create_post(text, images, audience) → {post_id, story_id, permalink,...}
     fb.list_posts(limit)             → [{post_id, text, time, permalink, story_id}]
@@ -147,6 +148,43 @@ class FBClient:
         except (OSError, json.JSONDecodeError) as e:
             raise FBError(f"session file hỏng ({files[0].name}): {e}") from e
         return cls(data.get("cookies", []))
+
+    @classmethod
+    def from_cookies_txt(cls, path: str | Path) -> FBClient:
+        """Đọc file cookies.txt định dạng Netscape (tiện ích
+        Get cookies.txt LOCALLY, EditThisCookie...).
+
+        Chỉ lấy cookie *.facebook.com; dòng `# HttpOnly_` vẫn là cookie
+        thật — bỏ prefix, đọc tiếp. Trùng name → bản sau (HttpOnly) thắng.
+        """
+        try:
+            text = Path(path).read_text(encoding="utf-8-sig")
+        except OSError as e:
+            raise FBError(f"không đọc được {path}: {e}") from e
+        picked: list[dict] = []
+        index: dict[str, int] = {}
+        for line in text.splitlines():
+            body = line.strip()
+            if body.startswith("# HttpOnly_"):
+                body = body[len("# HttpOnly_"):]
+            if not body or body.startswith("#"):
+                continue
+            parts = body.split("\t")
+            if len(parts) < 7:
+                continue
+            domain, _flag, _path, _secure, _expires, name, value = parts[:7]
+            if "facebook.com" not in domain or not name or value == "":
+                continue
+            cookie = {"domain": domain, "name": name, "path": _path,
+                      "secure": _secure.upper() == "TRUE", "value": value}
+            if name in index:
+                picked[index[name]] = cookie
+            else:
+                index[name] = len(picked)
+                picked.append(cookie)
+        if not picked:
+            raise FBError(f"{path} không có cookie facebook.com nào")
+        return cls(picked)
 
     def _set_cookies(self) -> None:
         for name, value in self.cookies.items():
