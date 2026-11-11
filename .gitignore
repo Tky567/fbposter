@@ -1,5 +1,7 @@
 # session / cookie — KHÔNG BAO GIỜ commit
 sessions/
+cookies.txt
+facebook_*.json
 *.session.json
 *cookie*.json
 .env
