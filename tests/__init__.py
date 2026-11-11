@@ -1,1 +1,0 @@
-"""fbposter test package."""

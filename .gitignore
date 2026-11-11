@@ -4,6 +4,9 @@ sessions/
 *cookie*.json
 .env
 
+# dev tools (local only)
+_live_*.py
+
 # python
 __pycache__/
 *.py[cod]
