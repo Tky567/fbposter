@@ -121,13 +121,8 @@ traffic web, sửa hằng số `DOC_IDS` trong `fbposter/spec.py`.
 
 ## Kiểm tra
 
-```bash
-pip install pytest ruff
-pytest
-ruff check .
-```
-
-Tests chạy offline hoàn toàn (HTTP giả, không gọi facebook.com).
+Thư viện phát hành không kèm test offline — bộ test offline chạy tại
+workspace (selftest + pytest trên transport giả, không gọi facebook.com).
 
 ## Disclaimer
 
