@@ -45,7 +45,7 @@ _LSD_PATTERNS = (
 
 
 def jazoest(dtsg: str) -> str:
-    return int("2" + str(sum(ord(c) for c in dtsg)))
+    return "2" + str(sum(ord(c) for c in dtsg))
 
 
 def _find(patterns: tuple, html: str) -> str | None:

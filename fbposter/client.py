@@ -1,7 +1,7 @@
 """FBClient — thư viện đăng bài + quản lí bài đăng Facebook, thuần HTTPS.
 
 Không browser, không playwright: chỉ curl_cffi (TLS fingerprint Chrome) gọi
-facebook.com. Session = cookie c_user/xs từ extension grabber.
+facebook.com. Session = cookie c_user/xs (cookies.txt hoặc file JSON).
 
 API:
     fb = FBClient.from_session_dir("sessions")
@@ -20,7 +20,6 @@ import re
 import string
 import time
 from pathlib import Path
-from typing import Self
 
 from curl_cffi import requests as creq
 
@@ -43,7 +42,9 @@ _BASE_HEADERS = {
 _TOKEN_TTL = 30 * 60      # fb_dtsg sống ~vài giờ; refresh 30 phút
 _REQUIRED_COOKIES = ("c_user", "xs")
 _MAX_IMAGES = 4
-_MAX_IMAGE_BYTES = 5 * 1024 * 1024
+_MAX_IMAGE_BYTES = 8 * 1024 * 1024
+# FB thật nhận ≥5.05MB (test live 2026-11-11, 7680x4320 JPEG) — cap 8MB là
+# kiểm tra hợp lý phía client, server là chốt cuối.
 
 _MIME_BY_MAGIC = (
     (b"\x89PNG\r\n\x1a\n", "image/png", ".png"),
@@ -74,6 +75,8 @@ def build_multipart(parts: list) -> tuple[bytes, str]:
         out += f"--{boundary}\r\n".encode()
         if isinstance(value, tuple):
             filename, data, mime = value
+            filename = (filename.replace('"', "%22")
+                        .replace("\r", "").replace("\n", ""))
             out += (f'Content-Disposition: form-data; name="{name}"; '
                     f'filename="{filename}"\r\n'
                     f"Content-Type: {mime}\r\n\r\n").encode()
@@ -84,6 +87,15 @@ def build_multipart(parts: list) -> tuple[bytes, str]:
                     f"{value}\r\n").encode()
     out += f"--{boundary}--\r\n".encode()
     return bytes(out), boundary
+
+
+def _dig(obj, *keys):
+    """obj[k1][k2]... — None nếu thiếu khoá hoặc gặp null giữa chừng."""
+    for k in keys:
+        if not isinstance(obj, dict):
+            return None
+        obj = obj.get(k)
+    return obj
 
 
 class FBError(RuntimeError):
@@ -121,7 +133,7 @@ class FBClient:
             cookies = picked
         missing = [k for k in _REQUIRED_COOKIES if not cookies.get(k)]
         if missing:
-            raise FBError(f"thiếu cookie {', '.join(missing)} — Grab lại session")
+            raise FBError(f"thiếu cookie {', '.join(missing)} — lấy lại cookie")
         self.cookies = dict(cookies)
         self.user_id = str(self.cookies["c_user"])
         self.http = http or creq.Session(impersonate=impersonate)
@@ -133,21 +145,25 @@ class FBClient:
             random.choices(string.ascii_letters + string.digits, k=8))
         self._mutation_seq = 0
         self._actor_name: str | None = None
-        self._last_html = ""
 
     # ------------------------------------------------------------ session
     @classmethod
     def from_session_dir(cls, directory: str | Path) -> FBClient:
-        files = sorted(Path(directory).glob("facebook_*.json"), reverse=True)
+        folder = Path(directory)
+        files = (sorted(folder.glob("facebook_*.json"), reverse=True)
+                 or sorted(folder.glob("*.json"), reverse=True))
         if not files:
             raise FBError(
-                f"không có session facebook trong {directory} — Grab lại "
-                "bằng extension")
+                f"không có session facebook trong {directory} — cung cấp cookie")
         try:
             data = json.loads(files[0].read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as e:
+        except (OSError, ValueError) as e:
             raise FBError(f"session file hỏng ({files[0].name}): {e}") from e
-        return cls(data.get("cookies", []))
+        cookies = data.get("cookies") if isinstance(data, dict) else data
+        if not isinstance(cookies, (list, dict)):
+            raise FBError(f"session file sai định dạng ({files[0].name}): cần "
+                          'list cookie hoặc {"cookies": [...]}')
+        return cls(cookies)
 
     @classmethod
     def from_cookies_txt(cls, path: str | Path) -> FBClient:
@@ -173,7 +189,12 @@ class FBClient:
             if len(parts) < 7:
                 continue
             domain, _flag, _path, _secure, _expires, name, value = parts[:7]
-            if "facebook.com" not in domain or not name or value == "":
+            # khớp chặt: evilfacebook.com / facebook.com.attacker.io phải loại
+            domain = domain.lstrip(".").lower()
+            if (domain != "facebook.com"
+                    and not domain.endswith(".facebook.com")):
+                continue
+            if not name or value == "":
                 continue
             cookie = {"domain": domain, "name": name, "path": _path,
                       "secure": _secure.upper() == "TRUE", "value": value}
@@ -202,19 +223,23 @@ class FBClient:
         if ("DTSGInitData" not in html and "fb_dtsg" not in html
                 and ("/login" in str(r.url) or 'name="login"' in html)):
             raise FBError(
-                "session facebook hết hạn hoặc checkpoint — Grab lại "
-                "bằng extension")
-            # trang vẫn parse thử — nếu vẫn không có token coi như chết
+                "session facebook hết hạn hoặc checkpoint — lấy lại cookie")
         self.params.apply_bootstrap(html)
-        self._last_html = html
         self._tokens_at = time.time()
         if not self._actor_name:
             m = re.search(r'"name":"([^"]{1,80})","short_name"', html)
             if m:
                 self._actor_name = m.group(1)
+        # đối chiếu user trong HTML với cookie c_user — session sai/kéo
+        # cookie từ tài khoản khác là phát hiện ngay (pattern live-verified)
+        m = re.search(r'"USER_ID":"(\d+)"', html)
+        if m and m.group(1) != self.user_id:
+            raise FBError(
+                f"cookie không khớp tài khoản đang đăng nhập "
+                f"(HTML USER_ID={m.group(1)} ≠ c_user={self.user_id})")
         if not self.params.dtsg:
             raise FBError("không bóc được fb_dtsg từ home — session có thể "
-                          "bị hạn chế, Grab lại bằng extension")
+                          "bị hạn chế, lấy lại cookie")
 
     def _get(self, url: str, **kw) -> creq.Response:
         kw.setdefault("timeout", 60)
@@ -248,20 +273,47 @@ class FBClient:
         if r.status_code == 404:
             raise FBError(f"doc_id {doc_id} đã cũ ({friendly}) — chụp lại "
                           "mutation từ web rồi sửa fbposter/spec.py")
+        if r.status_code == 429:
+            raise FBError("facebook giới hạn tốc độ (429) — chờ rồi thử lại",
+                          429)
+        if r.status_code >= 500:
+            raise FBError(f"facebook lỗi máy chủ ({r.status_code}) — thử lại "
+                          "sau", r.status_code)
         docs = self._parse_docs(r)
         want = _RESULT_ROOT.get(friendly)
         chosen = None
+        first_err = None
         for doc in docs:
-            errs = doc.get("errors")
-            if errs:
-                self._raise_graphql_errors(doc, friendly)
             data = doc.get("data")
-            if isinstance(data, dict) and (want is None or want in data):
+            usable = isinstance(data, dict) and (
+                data.get(want) is not None if want else bool(data))
+            if usable:  # lỗi từng phần đi kèm data hợp lệ không phải thất bại
                 chosen = doc
                 break
-        if chosen is None and docs:
+            if first_err is None and (doc.get("errors") or doc.get("error")):
+                first_err = doc
+        if chosen is None:
+            if first_err is not None:
+                if first_err.get("errors"):
+                    self._raise_graphql_errors(first_err, friendly)
+                legacy = self._legacy_error(first_err)
+                if legacy:
+                    raise legacy
             chosen = docs[0]
         return chosen or {}
+
+    @staticmethod
+    def _legacy_error(doc: dict) -> FBError | None:
+        """Lỗi dạng {"error": 1357001, "errorSummary": "..."} (HTTP 200)."""
+        if not isinstance(doc, dict) or not doc.get("error"):
+            return None
+        msg = doc.get("errorSummary") or doc.get("errorDescription")
+        if not msg:
+            return None
+        code = doc["error"] if isinstance(doc["error"], int) else None
+        if code in (1357001, 1357004) or "login" in str(msg).lower():
+            return FBError(f"session facebook chết ({msg}) — lấy lại cookie", code)
+        return FBError(f"facebook từ chối: {msg}", code)
 
     @staticmethod
     def _parse_docs(r: creq.Response) -> list:
@@ -300,7 +352,7 @@ class FBClient:
         subcode = e0.get("subcode") or e0.get("error_subcode") or None
         low = msg.lower()
         if "login" in low or code in (1357001, 1357004):
-            raise FBError(f"session facebook chết ({msg}) — Grab lại", code,
+            raise FBError(f"session facebook chết ({msg}) — lấy lại cookie", code,
                           subcode)
         raise FBError(f"facebook từ chối {friendly}: {msg}", code, subcode)
 
@@ -316,10 +368,17 @@ class FBClient:
         }
 
     # ------------------------------------------------------- photo upload
-    def upload_photo(self, data: bytes, filename: str = "") -> str:
-        """Upload 1 ảnh → photo_id dùng cho create_post/edit attachments."""
+    def upload_photo(self, data: bytes | str | Path, filename: str = "") -> str:
+        """Upload 1 ảnh (bytes hoặc đường dẫn file) → photo_id."""
+        if isinstance(data, (str, Path)):
+            path = Path(data)
+            if not path.is_file():
+                raise FBError(f"file ảnh không tồn tại: {path}")
+            filename = filename or path.name
+            data = path.read_bytes()
         if len(data) > _MAX_IMAGE_BYTES:
-            raise FBError(f"ảnh vượt 5MB ({len(data) // 1024}KB)")
+            raise FBError(f"ảnh vượt {_MAX_IMAGE_BYTES // (1024 * 1024)}MB "
+                          f"({len(data) // 1024}KB)")
         sniffed = sniff_image(data)
         if not sniffed:
             raise FBError("ảnh không hợp lệ (cần JPEG/PNG/GIF/WEBP)")
@@ -346,12 +405,17 @@ class FBClient:
         if r.status_code != 200:
             raise FBError(f"upload ảnh trả {r.status_code}")
         payload = {}
-        for doc in self._parse_docs(r):
+        docs = self._parse_docs(r)
+        for doc in docs:
             if isinstance(doc.get("payload"), dict) and doc["payload"]:
                 payload = doc["payload"]
                 break
         pid = payload.get("photoID")
         if not pid:
+            for doc in docs:
+                legacy = self._legacy_error(doc)
+                if legacy:
+                    raise legacy
             raise FBError("upload ảnh thành công nhưng không có photoID")
         return str(pid)
 
@@ -369,45 +433,55 @@ class FBClient:
     def create_post(self, text: str,
                     images: list[bytes | str | Path] | None = None,
                     audience: str | None = "public",
-                    ai_generated: bool = False) -> dict:
+                    ai_generated: bool = False,
+                    photo_ids: list[str] | None = None) -> dict:
         """Đăng bài lên profile cá nhân. Trả {post_id, story_id, permalink}.
 
         audience: public | friends | only_me | None (giữ default tài khoản).
-        ai_generated: bật nhãn "AI generated" của composer."""
+        ai_generated: bật nhãn "AI generated" của composer.
+        photo_ids: photoID đã upload sẵn (upload_photo) — gắn trực tiếp,
+        không upload lại. Tối đa 4 ảnh/bài (uploaded + photo_ids) — vượt raise."""
+        self._check_audience(audience)
+        if isinstance(images, (str, bytes, Path)):
+            images = [images]
         body = text.strip()
-        if not body and not images:
+        if not body and not images and not photo_ids:
             raise FBError("bài trống: cần text hoặc ảnh")
-        photo_ids: list[str] = []
-        for item in (images or [])[:_MAX_IMAGES]:
-            photo_ids.append(self._upload_from(item))
+        attached = [str(p) for p in (photo_ids or [])]
+        if len(attached) + len(images or []) > _MAX_IMAGES:
+            raise FBError(f"tối đa {_MAX_IMAGES} ảnh/bài — nhận "
+                          f"{len(attached) + len(images or [])}")
+        uploaded: list[str] = []
+        for item in images or []:
+            uploaded.append(self._upload_from(item))
         session_id = spec.new_session_id()
         variables = spec.create_variables(
-            body, self.user_id, photo_ids or None, audience, session_id,
-            self._next_mutation_id(), attribution_chain(),
+            body, self.user_id, attached + uploaded or None, audience,
+            session_id, self._next_mutation_id(), attribution_chain(),
             ai_generated=ai_generated)
         data = self._graphql("ComposerStoryCreateMutation", spec.DOC_CREATE,
                              variables, spec.CRN["create"])
-        story = (data.get("data", {}).get("story_create", {}).get("story")
-                 or {})
+        story = _dig(data, "data", "story_create", "story") or {}
         post_id = story.get("legacy_story_hideable_id") or ""
         if not post_id:
             # publishing_flow FALLBACK vẫn có story; thiếu hẳn → lỗi thật
             raise FBError("facebook không trả post_id — bài có thể chưa lên "
-                          f"(publishing_flow={data.get('data', {}).get('story_create', {}).get('publishing_flow')})")
+                          f"(publishing_flow={_dig(data, 'data', 'story_create', 'publishing_flow')})")
         return {
             "post_id": str(post_id),
             "story_id": story.get("id") or "",
-            "permalink": story.get("url") or "https://www.facebook.com/me",
-            "photo_ids": photo_ids,
+            "permalink": story.get("url") or None,
+            "photo_ids": attached + uploaded,
             "session_id": session_id,
         }
 
+    @staticmethod
+    def _check_audience(audience: str | None) -> None:
+        if audience is not None and audience not in spec.PRIVACY_BASE_STATE:
+            raise FBError(f"audience không hợp lệ: {audience} "
+                          "(public | friends | only_me)")
+
     def _upload_from(self, item: bytes | str | Path) -> str:
-        if isinstance(item, (str, Path)):
-            path = Path(item)
-            if not path.is_file():
-                raise FBError(f"file ảnh không tồn tại: {path}")
-            return self.upload_photo(path.read_bytes(), path.name)
         return self.upload_photo(item)
 
     # ---------------------------------------------------------- list posts
@@ -428,8 +502,8 @@ class FBClient:
             data = self._graphql("ProfileCometTimelineFeedRefetchQuery",
                                  spec.DOC_TIMELINE, variables,
                                  spec.CRN["timeline"])
-            node = (data.get("data", {}).get("node") or {})
-            units = (node.get("timeline_list_feed_units") or {})
+            node = _dig(data, "data", "node") or {}
+            units = node.get("timeline_list_feed_units") or {}
             edges = units.get("edges") or []
             if not edges:
                 break
@@ -454,6 +528,8 @@ class FBClient:
 
     @staticmethod
     def _edge_post(edge: dict) -> dict | None:
+        if not isinstance(edge, dict):
+            return None
         node = edge.get("node") or {}
         post_id = node.get("post_id") or ""
         if not post_id:
@@ -492,6 +568,7 @@ class FBClient:
         """Sửa bài đã đăng (text và/hoặc đối tượng và/hoặc nhãn AI)."""
         if text is None and audience is None and ai_generated is None:
             raise FBError("edit_post: cần text hoặc audience hoặc ai_generated")
+        self._check_audience(audience)
         story_id = spec.encode_story_id(self.user_id, str(post_id),
                                         long_form=True)
         session_id = spec.new_session_id()
@@ -499,15 +576,19 @@ class FBClient:
         # lấy text cũ nếu chỉ đổi audience
         new_text = text
         if new_text is None:
-            current = self._find_post_text(post_id)
-            new_text = current or ""
+            new_text = self._find_post_text(post_id)
+            if new_text is None:
+                # gửi "" sẽ xoá sạch nội dung bài → dừng thay vì đoán
+                raise FBError(
+                    f"không đọc được nội dung hiện tại của bài {post_id} "
+                    "(bài cũ/đã ghim?) — truyền text=... để sửa an toàn")
         variables = spec.edit_variables(new_text, story_id, self.user_id,
                                         audience, session_id,
                                         self._next_mutation_id(),
                                         ai_generated=ai_generated)
         data = self._graphql("ComposerStoryEditMutation", spec.DOC_EDIT,
                              variables, spec.CRN["edit"])
-        story = (data.get("data", {}).get("story_edit", {}).get("story") or {})
+        story = _dig(data, "data", "story_edit", "story") or {}
         return {
             "post_id": str(post_id),
             "story_id": story_id,
@@ -518,12 +599,9 @@ class FBClient:
         }
 
     def _find_post_text(self, post_id: str) -> str | None:
-        try:
-            for post in self.list_posts(limit=12):
-                if post["post_id"] == str(post_id):
-                    return post["text"]
-        except FBError:
-            return None
+        for post in self.list_posts(limit=50):
+            if post["post_id"] == str(post_id):
+                return post["text"]
         return None
 
     # --------------------------------------------------------- delete post
@@ -534,8 +612,7 @@ class FBClient:
                                           self._next_mutation_id())
         data = self._graphql("useCometFeedStoryDeleteMutation", spec.DOC_DELETE,
                              variables, spec.CRN["delete"])
-        deleted = (data.get("data", {}).get("story_delete", {})
-                   .get("deleted_story_id"))
+        deleted = _dig(data, "data", "story_delete", "deleted_story_id")
         if not deleted:
             raise FBError("facebook không xác nhận xoá bài")
         return True
@@ -547,7 +624,7 @@ class FBClient:
         data = self._graphql("CometPrivacySelectorEditableQuery",
                              spec.DOC_PRIVACY, variables,
                              spec.CRN["edit"])
-        node = data.get("data", {}).get("node") or {}
+        node = _dig(data, "data", "node") or {}
         row = node.get("privacy_row_input") or {}
         base = row.get("base_state")
         if not base:
@@ -563,7 +640,7 @@ class FBClient:
         except Exception:  # noqa: S110, BLE001 — close là phụ
             pass
 
-    def __enter__(self) -> Self:
+    def __enter__(self) -> FBClient:  # noqa: PYI034 — Self chỉ có từ 3.11
         return self
 
     def __exit__(self, *exc) -> None:

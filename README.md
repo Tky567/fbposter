@@ -73,7 +73,11 @@ r = fb.create_post("hello world")
 
 r = fb.create_post("kèm ảnh", images=["a.png", "b.jpg"],
                    audience="public", ai_generated=False)
-# upload ảnh qua upload.facebook.com (multipart), tối đa 4 ảnh
+# → {post_id, story_id, permalink (None nếu server không trả), photo_ids}
+
+# gắn photoID đã upload sẵn — không upload lại
+pid = fb.upload_photo(open("c.jpg", "rb").read(), "c.jpg")
+fb.create_post("gắn ảnh có sẵn", photo_ids=[pid])
 
 fb.list_posts(limit=10)
 # → [{"post_id", "text", "time", "permalink", "story_id"}]
@@ -112,6 +116,17 @@ tự động khi có `images=`. JPEG/PNG/GIF/WEBP nhận qua magic bytes. Multip
 được dựng tay đúng định dạng web client (source=8, profile_id, waterfallxapp,
 farr...).
 
+Giới hạn ảnh:
+
+- tối đa **4 ảnh/bài** — vượt là raise `FBError`, không cắt âm thầm.
+- cap phía client **8MB** (cap server là chốt cuối). Facebook thật nhận được
+  ít nhất 5.05MB / 7680×4320 JPEG — đã test live.
+- `upload_photo` không đính kèm bài nào → ảnh nằm ngoài feed (không có API
+  xoá ảnh mồ côi trong thư viện); dùng `photo_ids=` trong `create_post` để
+  gắn ảnh đã upload.
+
+`permalink` trả `None` nếu Facebook không gửi url — không có permalink giả.
+
 ## Xử lí lỗi
 
 Mọi lỗi HTTP/GraphQL raise `fbposter.FBError` kèm message gốc của server
@@ -123,6 +138,16 @@ traffic web, sửa hằng số `DOC_IDS` trong `fbposter/spec.py`.
 
 Thư viện phát hành không kèm test offline — bộ test offline chạy tại
 workspace (selftest + pytest trên transport giả, không gọi facebook.com).
+
+## Bảo mật phiên
+
+Cookie `c_user` + `xs` = toàn quyền tài khoản:
+
+- đừng commit, đừng dán vào issue/log CI; file cookie để permission chặt
+  (Windows: chỉ user của bạn đọc được).
+- đăng xuất hoặc đổi mật khẩu → cookie chết; cuộn lại cookie mới khi cần.
+- thư viện đối chiếu `USER_ID` trong HTML với `cookie c_user` — cookie kéo
+  từ tài khoản khác bị từ chối ngay khi verify.
 
 ## Disclaimer
 

@@ -1,30 +1,28 @@
-"""Liệt kê, sửa, đổi đối tượng, xoá — quản lí bài sau khi đăng."""
+"""Vòng đời hoàn toàn trên bài của chính ví dụ — không đụng bài thật.
+
+Tạo bài only_me → sửa nội dung → đổi nhãn AI → đọc privacy → xoá.
+"""
 from fbposter import FBClient, FBError
 
 
 def main() -> None:
     fb = FBClient.from_session_dir("sessions")
     try:
-        posts = fb.list_posts(limit=5)
-        for p in posts:
-            print(p["post_id"], "|", p["time"], "|", p["text"][:50])
-        if not posts:
-            print("profile chưa có bài nào")
-            return
+        print(fb.verify())
 
-        post_id = posts[0]["post_id"]
+        # tạo bài riêng only_me để thao tác
+        r = fb.create_post("bài test của ví dụ manage_posts",
+                           audience="only_me")
+        print("tạo:", r["post_id"], "| privacy:",
+              fb.get_post_privacy(r["post_id"]))
 
-        # sửa nội dung
-        fb.edit_post(post_id, text="(đã sửa)")
-        print("đã sửa nội dung:", post_id)
+        # sửa nội dung + gắn nhãn AI
+        fb.edit_post(r["post_id"], text="(đã sửa trong ví dụ)")
+        fb.edit_post(r["post_id"], ai_generated=True)
+        print("đã sửa bài test")
 
-        # đổi đối tượng xem: chỉ bạn bè
-        fb.edit_post(post_id, audience="friends")
-        print("privacy hiện tại:", fb.get_post_privacy(post_id))  # FRIENDS
-
-        # xoá — bỏ comment để chạy
-        # fb.delete_post(post_id)
-        # print("đã xoá:", post_id)
+        # xoá dọn
+        print("xoá:", fb.delete_post(r["post_id"]))
     except FBError as e:
         print("lỗi:", e)
     finally:
