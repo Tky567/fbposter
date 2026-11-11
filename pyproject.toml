@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fbposter"
+version = "1.0.0"
+description = "Post to and manage posts on a Facebook profile over plain HTTPS — no browser"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "fbposter contributors" }]
+requires-python = ">=3.10"
+dependencies = ["curl_cffi>=0.7"]
+keywords = ["facebook", "poster", "https", "curl-cffi", "post", "privacy"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Internet :: WWW/HTTP",
+    "Topic :: Software Development :: Libraries",
+]
+
+[project.urls]
+Homepage = "https://github.com/Tky567/fbposter"
+Changelog = "https://github.com/Tky567/fbposter/blob/main/CHANGELOG.md"
+
+[tool.setuptools]
+packages = ["fbposter"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]

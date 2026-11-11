@@ -1,0 +1,19 @@
+# session / cookie — KHÔNG BAO GIỜ commit
+sessions/
+*.session.json
+*cookie*.json
+.env
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# capture/dev
+*.har
+*.pcap
